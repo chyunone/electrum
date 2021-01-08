@@ -181,10 +181,10 @@ class ElectrumWindow(App, Logger):
     def on_use_rbf(self, instance, x):
         self.electrum_config.set_key('use_rbf', self.use_rbf, True)
 
-    use_gossip = BooleanProperty(False)
-    def on_use_gossip(self, instance, x):
-        self.electrum_config.set_key('use_gossip', self.use_gossip, True)
-        if self.use_gossip:
+    use_trampoline = BooleanProperty(False)
+    def on_use_trampoline(self, instance, x):
+        self.electrum_config.set_key('use_trampoline', self.use_trampoline, True)
+        if not self.use_trampoline:
             self.network.start_gossip()
         else:
             self.network.stop_gossip()
@@ -390,7 +390,7 @@ class ElectrumWindow(App, Logger):
         self.fx = self.daemon.fx
         self.use_rbf = config.get('use_rbf', True)
         self.android_backups = config.get('android_backups', False)
-        self.use_gossip = config.get('use_gossip', True)
+        self.use_trampoline = config.get('use_trampoline', True)
         self.use_unconfirmed = not config.get('confirmed_only', False)
 
         # create triggers so as to minimize updating a max of 2 times a sec

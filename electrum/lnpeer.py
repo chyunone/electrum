@@ -246,16 +246,16 @@ class Peer(Logger):
         self.maybe_set_initialized()
 
     def on_node_announcement(self, payload):
-        if self.network.config.get('use_gossip'):
+        if self.lnworker.channel_db:
             self.gossip_queue.put_nowait(('node_announcement', payload))
 
     def on_channel_announcement(self, payload):
-        if self.network.config.get('use_gossip'):
+        if self.lnworker.channel_db:
             self.gossip_queue.put_nowait(('channel_announcement', payload))
 
     def on_channel_update(self, payload):
         self.maybe_save_remote_update(payload)
-        if self.network.config.get('use_gossip'):
+        if self.lnworker.channel_db:
             self.gossip_queue.put_nowait(('channel_update', payload))
 
     def maybe_save_remote_update(self, payload):

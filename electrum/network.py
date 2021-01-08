@@ -355,7 +355,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         from . import lnrouter
         from . import channel_db
         from . import lnworker
-        if not self.config.get('use_gossip'):
+        if self.config.get('use_trampoline'):
             return
         if self.lngossip is None:
             self.channel_db = channel_db.ChannelDB(self)

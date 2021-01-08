@@ -450,7 +450,7 @@ class Daemon(Logger):
         if self.network:
             self.network.start(jobs=[self.fx.run])
             # prepare lightning functionality, also load channel db early
-            if self.config.get('use_gossip'):
+            if not self.config.get('use_trampoline', True):
                 self.network.start_gossip()
 
         self.taskgroup = TaskGroup()

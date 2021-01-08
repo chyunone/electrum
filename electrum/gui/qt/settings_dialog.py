@@ -129,24 +129,23 @@ class SettingsDialog(WindowModalDialog):
         # lightning
         lightning_widgets = []
 
-        help_gossip = _("""If this option is checked, Electrum will download the network
+        help_trampoline = _("""If this option is disabled, Electrum will download the network
 channels graph and compute payment path locally, instead of using trampoline payments. """)
-        gossip_cb = QCheckBox(_("Download network graph"))
-        gossip_cb.setToolTip(help_gossip)
-        gossip_cb.setChecked(bool(self.config.get('use_gossip', False)))
-        def on_gossip_checked(x):
-            use_gossip = bool(x)
-            self.config.set_key('use_gossip', use_gossip)
-            if use_gossip:
+        trampoline_cb = QCheckBox(_("Use trampoline routing"))
+        trampoline_cb.setToolTip(help_trampoline)
+        trampoline_cb.setChecked(bool(self.config.get('use_trampoline', True)))
+        def on_trampoline_checked(x):
+            use_trampoline = bool(x)
+            self.config.set_key('use_trampoline', use_trampoline)
+            if not use_trampoline:
                 self.window.network.start_gossip()
             else:
                 self.window.network.stop_gossip()
             util.trigger_callback('ln_gossip_sync_progress')
             # FIXME: update all wallet windows
             util.trigger_callback('channels_updated', self.wallet)
-
-        gossip_cb.stateChanged.connect(on_gossip_checked)
-        lightning_widgets.append((gossip_cb, None))
+        trampoline_cb.stateChanged.connect(on_trampoline_checked)
+        lightning_widgets.append((trampoline_cb, None))
 
         help_local_wt = _("""If this option is checked, Electrum will
 run a local watchtower and protect your channels even if your wallet is not
