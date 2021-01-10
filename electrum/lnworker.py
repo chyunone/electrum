@@ -1043,12 +1043,24 @@ class LNWallet(LNWorker):
             success = payment_attempt_log.success
             if success:
                 break
-            if self.channel_db is None:
-                if payment_attempt_log.failure_details.is_blacklisted and trampoline2:
-                    self.logger.info(f"blacklisting trampoline2 {trampoline2.hex()}")
-                    trampoline2_list.remove(trampoline2)
+            if payment_attempt_log.failure_details.is_blacklisted:
+                if self.channel_db is None:
+                    if trampoline2:
+                        self.logger.info(f"blacklisting trampoline2 {trampoline2.hex()}")
+                        trampoline2_list.remove(trampoline2)
+                    else:
+                        trampoline_fee_level += 1
                 else:
-                    trampoline_fee_level += 1
+                    # blacklist channel after reporter node
+                    # TODO this should depend on the error (even more granularity)
+                    # also, we need finer blacklisting (directed edges; nodes)
+                    sender_idx = payment_attempt_log.failure_details.sender_idx
+                    try:
+                        short_chan_id = route[sender_idx + 1].short_channel_id
+                    except IndexError:
+                        self.logger.info("payment destination reported error")
+                    else:
+                        self.network.path_finder.add_to_blacklist(short_chan_id)
         else:
             reason = _('Failed after {} attempts').format(attempts)
         util.trigger_callback('invoice_status', self.wallet, key)
@@ -1081,16 +1093,6 @@ class LNWallet(LNWorker):
                 # TODO "decode_onion_error" might raise, catch and maybe blacklist/penalise someone?
                 failure_msg, sender_idx = chan.decode_onion_error(payment_attempt.error_bytes, route, htlc.htlc_id)
                 is_blacklisted = self.handle_error_code_from_failed_htlc(failure_msg, sender_idx, route, peer)
-                if self.channel_db and is_blacklisted:
-                    # blacklist channel after reporter node
-                    # TODO this should depend on the error (even more granularity)
-                    # also, we need finer blacklisting (directed edges; nodes)
-                    try:
-                        short_chan_id = route[sender_idx + 1].short_channel_id
-                    except IndexError:
-                        self.logger.info("payment destination reported error")
-                    else:
-                        self.network.path_finder.add_to_blacklist(short_chan_id)
             else:
                 # probably got "update_fail_malformed_htlc". well... who to penalise now?
                 assert payment_attempt.failure_message is not None
