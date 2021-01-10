@@ -141,7 +141,8 @@ FALLBACK_NODE_LIST_MAINNET = [
 # hardcoded list
 TRAMPOLINE_NODES = {
     'ACINQ': LNPeerAddr(host='34.239.230.56', port=9735, pubkey=bfh('03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f')),
-    'ELECTRUM': LNPeerAddr(host='144.76.99.209', port=9740, pubkey=bfh('03ecef675be448b615e6176424070673ef8284e0fd19d8be062a6cb5b130a0a0d1')),
+    #'ELECTRUM': LNPeerAddr(host='144.76.99.209', port=9740, pubkey=bfh('03ecef675be448b615e6176424070673ef8284e0fd19d8be062a6cb5b130a0a0d1')),
+    'blah': LNPeerAddr(host='172.17.188.3', port=9735, pubkey=bfh('02312627fdf07fbdd7e5ddb136611bdde9b00d26821d14d94891395452f67af248')),
 }
 
 TRAMPOLINES_BY_ID = dict([(x.pubkey, x) for x in TRAMPOLINE_NODES.values()])
@@ -1015,7 +1016,11 @@ class LNWallet(LNWorker):
         self.logs[key] = log = []
         success = False
         reason = ''
-        #attempts = 1
+        if self.channel_db is None:
+            trampoline_fee_level = 0
+            trampoline2_list = list(TRAMPOLINES_BY_ID.keys())
+            random.shuffle(trampoline2_list)
+        #
         for i in range(attempts):
             try:
                 # note: path-finding runs in a separate thread so that we don't block the asyncio loop
@@ -1025,7 +1030,7 @@ class LNWallet(LNWorker):
                 if self.channel_db:
                     route = await run_in_thread(partial(self._create_route_from_invoice, lnaddr, full_path=full_path))
                 else:
-                    route = await self.create_trampoline_route(lnaddr, i)
+                    route, trampoline2 = await self.create_trampoline_route(lnaddr, trampoline_fee_level, trampoline2_list)
                 self.set_invoice_status(key, PR_INFLIGHT)
                 util.trigger_callback('invoice_status', self.wallet, key)
                 payment_attempt_log = await self._pay_to_route(route, lnaddr)
@@ -1038,6 +1043,12 @@ class LNWallet(LNWorker):
             success = payment_attempt_log.success
             if success:
                 break
+            if self.channel_db is None:
+                if payment_attempt_log.failure_details.is_blacklisted and trampoline2:
+                    self.logger.info(f"blacklisting trampoline2 {trampoline2.hex()}")
+                    trampoline2_list.remove(trampoline2)
+                else:
+                    trampoline_fee_level += 1
         else:
             reason = _('Failed after {} attempts').format(attempts)
         util.trigger_callback('invoice_status', self.wallet, key)
@@ -1113,12 +1124,16 @@ class LNWallet(LNWorker):
             channel_update_len = int.from_bytes(data[offset:offset+2], byteorder="big")
             channel_update_as_received = data[offset+2: offset+2+channel_update_len]
             payload = self._decode_channel_update_msg(channel_update_as_received)
+            if not self.channel_db:
+                self.logger.info(f'payload {payload}')
+                if code == OnionFailureCode.TRAMPOLINE_FEE_INSUFFICIENT:
+                    # todo: parse the node parameters here (not returned by eclair yet)
+                    return False
+                else:
+                    return True
             if payload is None:
                 self.logger.info(f'could not decode channel_update for failed htlc: {channel_update_len}  {data.hex()}')
                 return True
-            if not self.channel_db:
-                self.logger.info(f'payload {payload}')
-                return False
             short_channel_id = ShortChannelID(payload['short_channel_id'])
             r = self.channel_db.add_channel_update(payload)
             blacklist = False
@@ -1193,25 +1208,24 @@ class LNWallet(LNWorker):
         return self.lnrater.suggest_peer() if self.channel_db else random.choice(list(TRAMPOLINE_NODES.values())).pubkey
 
     @log_exceptions
-    async def create_trampoline_route(self, decoded_invoice: 'LnAddr', attempt:int) -> LNPaymentRoute:
+    async def create_trampoline_route(self, decoded_invoice: 'LnAddr', trampoline_fee_level:int, trampoline2_list:List[bytes]) -> LNPaymentRoute:
         """ return the route that leads to trampoline, and the trampoline fake edge"""
 
-        if attempt >= len(TRAMPOLINE_FEES):
-            raise NoPathFound()
         amount_msat = decoded_invoice.get_amount_msat()
         invoice_pubkey = decoded_invoice.pubkey.serialize()
         invoice_features = decoded_invoice.get_tag('9') or 0
         r_tags = decoded_invoice.get_routing_info()
         # FIXME: we use our hardcoded list to determine is_legacy,
         # because we do not generate trampoline invoices yet
-        #is_legacy = not bool(invoice_features & LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT)
-        for r_tag in r_tags:
-            if len(r_tag) == 1 and is_trampoline(r_tag[0][0]):
-                final_edge = r_tag[0]
-                is_legacy = False
-                break
-        else:
-            is_legacy = True
+        is_legacy = not bool(invoice_features & LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT)
+        if not is_legacy:
+            for r_tag in r_tags:
+                if len(r_tag) == 1 and is_trampoline(r_tag[0][0]):
+                    final_edge = r_tag[0]
+                    is_legacy = False
+                    break
+            else:
+                is_legacy = True
         # find a trampoline
         # assume direct channel to trampoline
         for chan in list(self.channels.values()):
@@ -1223,9 +1237,25 @@ class LNWallet(LNWorker):
                 break
         else:
             raise NoPathFound()
+
+        # use attempt number to decide fee and second trampoline
+        # we need a state with the list of nodes we have not tried
+        # add optional second trampoline
+        trampoline2 = None
+        if is_legacy:
+            for node_id in trampoline2_list:
+                if node_id != trampoline_node_id:
+                    trampoline2 = node_id
+                    break
         # fee level. the same fee is used for all trampolines
-        params = TRAMPOLINE_FEES[attempt]
-        self.logger.info(f'create route with trampoline {trampoline_node_id.hex()}: attempt={attempt}, is legacy: {is_legacy}, params: {params}')
+        if trampoline_fee_level < len(TRAMPOLINE_FEES):
+            params = TRAMPOLINE_FEES[trampoline_fee_level]
+        else:
+            raise NoPathFound()
+        self.logger.info(f'create route with trampoline: fee_level={trampoline_fee_level}, is legacy: {is_legacy}')
+        self.logger.info(f'first trampoline: {trampoline_node_id.hex()}')
+        self.logger.info(f'second trampoline: {trampoline2.hex() if trampoline2 else None}')
+        self.logger.info(f'params: {params}')
         # node_features is only used to determine is_tlv
         trampoline_features = LnFeatures.VAR_ONION_OPT
         # hop to trampoline
@@ -1246,22 +1276,14 @@ class LNWallet(LNWorker):
                 fee_proportional_millionths=params['fee_proportional_millionths'],
                 cltv_expiry_delta=params['cltv_expiry_delta'],
                 node_features=trampoline_features))
-        # add optional second trampoline
-        if is_legacy and self.config.get('use_two_trampolines'):
-            trampolines = list(TRAMPOLINES_BY_ID.keys())
-            random.shuffle(trampolines)
-            for node_id in trampolines:
-                if node_id != trampoline_node_id:
-                    trampoline2 = node_id
-                    self.logger.info(f'second trampoline: {trampoline2}')
-                    route.append(
-                        TrampolineEdge(
-                            node_id=trampoline2,
-                            fee_base_msat=params['fee_base_msat'],
-                            fee_proportional_millionths=params['fee_proportional_millionths'],
-                            cltv_expiry_delta=params['cltv_expiry_delta'],
-                            node_features=trampoline_features))
-                    break
+        if trampoline2:
+            route.append(
+                TrampolineEdge(
+                    node_id=trampoline2,
+                    fee_base_msat=params['fee_base_msat'],
+                    fee_proportional_millionths=params['fee_proportional_millionths'],
+                    cltv_expiry_delta=params['cltv_expiry_delta'],
+                    node_features=trampoline_features))
         # add routing info
         if is_legacy:
             invoice_routing_info = self.encode_routing_info(r_tags)
@@ -1284,7 +1306,7 @@ class LNWallet(LNWorker):
                 fee_proportional_millionths=0,
                 cltv_expiry_delta=0,
                 node_features=trampoline_features))
-        return route
+        return route, trampoline2
 
     @profiler
     def _create_route_from_invoice(self, decoded_invoice: 'LnAddr',
